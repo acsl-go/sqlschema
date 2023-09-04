@@ -1,4 +1,4 @@
-package sqlscheme
+package sqlschema
 
 func escape(source string) string {
 	var j int = 0

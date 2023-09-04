@@ -1,4 +1,4 @@
-package sqlscheme
+package sqlschema
 
 import (
 	"context"

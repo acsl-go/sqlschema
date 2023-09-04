@@ -1,4 +1,4 @@
-package sqlscheme
+package sqlschema
 
 type Field struct {
 	Name          string
