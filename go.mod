@@ -1,4 +1,4 @@
-module github.com/acsl-go/sql-schema
+module github.com/acsl-go/sqlschema
 
 go 1.18
 
