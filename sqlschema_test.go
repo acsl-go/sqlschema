@@ -51,7 +51,7 @@ func TestSchemeUpdate(t *testing.T) {
 				Comment:      "0 for Unknown, \"1\" for Male, '2' for Female, '3' for Other",
 			},
 		},
-		Indexs: []Index{
+		Indices: []Index{
 			{
 				Columns: []string{"id"},
 				Primary: true,

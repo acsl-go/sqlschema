@@ -78,7 +78,7 @@ func (sc *Schema) Update(db *sql.DB, ctx context.Context) error {
 		}
 	}
 
-	for _, index := range cur.Indexs {
+	for _, index := range cur.Indices {
 		if sc.Index(index.Name) == nil {
 			sql = "ALTER TABLE `" + sc.Name + "` DROP INDEX `" + index.Name + "`"
 			_, e = db.ExecContext(ctx, sql, args...)
@@ -88,7 +88,7 @@ func (sc *Schema) Update(db *sql.DB, ctx context.Context) error {
 		}
 	}
 
-	for _, index := range sc.Indexs {
+	for _, index := range sc.Indices {
 		idx := cur.Index(index.Name)
 		sql = ""
 		if idx == nil {
