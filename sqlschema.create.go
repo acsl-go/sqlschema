@@ -29,7 +29,7 @@ func (sc *Schema) Create(db *sql.DB, ctx context.Context) error {
 		}
 		sql += ","
 	}
-	for _, index := range sc.Indexs {
+	for _, index := range sc.Indices {
 		if index.Primary {
 			sql += "PRIMARY KEY ("
 		} else if index.Unique {
