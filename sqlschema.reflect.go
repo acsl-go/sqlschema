@@ -59,9 +59,13 @@ The column type could be omitted, if omitted, the type will be determined by the
 */
 
 import (
+	"context"
+	"database/sql"
 	"reflect"
 	"strings"
 	"sync"
+
+	"github.com/pkg/errors"
 )
 
 const (
@@ -82,21 +86,24 @@ const (
 type dataSchemaField struct {
 	Name               string       // Name of the field in struct
 	FieldType          reflect.Kind // Type of the field
-	ColumnName         string       // Name of the column in database
-	IsPrimaryKey       bool         // pk
-	IsAutoincrement    bool         // ai
-	IsNullable         bool         // null
-	DataStoreType      string       // column_type
-	DefaultValue       string       // def()
-	SerializeMethod    uint8        // arr | json | yaml
-	SerializeDelimiter string       // delimiter
-	IndexType          uint8        // pk | index | unique
-	indexName          string       // index name
-	Comment            string       // comment()
+	FieldIndex         int
+	ColumnName         string // Name of the column in database
+	IsPrimaryKey       bool   // pk
+	IsAutoincrement    bool   // ai
+	IsNullable         bool   // null
+	DataStoreType      string // column_type
+	DefaultValue       string // def()
+	SerializeMethod    uint8  // arr | json | yaml
+	SerializeDelimiter string // delimiter
+	IndexType          uint8  // pk | index | unique
+	indexName          string // index name
+	Comment            string // comment()
 }
 
 type dataSchemaInfo struct {
-	Fields []dataSchemaField
+	Fields      []*dataSchemaField
+	ByColumName map[string]*dataSchemaField
+	AIField     *dataSchemaField
 }
 
 var dataSchemaCache = sync.Map{}
@@ -236,16 +243,50 @@ func loadDataSchemaInfo(v reflect.Type) *dataSchemaInfo {
 	}
 	info := dataSchemaInfo{}
 	fieldCount := v.NumField()
-	info.Fields = make([]dataSchemaField, fieldCount)
+	info.Fields = make([]*dataSchemaField, fieldCount)
+	info.ByColumName = make(map[string]*dataSchemaField)
 	for i := 0; i < fieldCount; i++ {
 		field := v.Field(i)
 		if tag, ok := field.Tag.Lookup("db"); ok {
-			fieldInfo := dataSchemaField{
-				Name:      field.Name,
-				FieldType: field.Type.Kind(),
+			info.Fields[i] = &dataSchemaField{
+				Name:       field.Name,
+				FieldType:  field.Type.Kind(),
+				FieldIndex: i,
 			}
-			parseFieldTag(&fieldInfo, tag)
-			info.Fields[i] = fieldInfo
+			parseFieldTag(info.Fields[i], tag)
+			if info.Fields[i].ColumnName == "" {
+				info.Fields[i].ColumnName = field.Name
+			}
+			if info.Fields[i].DataStoreType == "" {
+				switch field.Type.Kind() {
+				case reflect.Int8, reflect.Int16, reflect.Int32:
+					info.Fields[i].DataStoreType = "int(11)"
+				case reflect.Int, reflect.Int64:
+					info.Fields[i].DataStoreType = "bigint(20)"
+				case reflect.Uint8, reflect.Uint16, reflect.Uint32:
+					info.Fields[i].DataStoreType = "int(11) unsigned"
+				case reflect.Uint, reflect.Uint64:
+					info.Fields[i].DataStoreType = "bigint(20) unsigned"
+				case reflect.Float32:
+					info.Fields[i].DataStoreType = "float"
+				case reflect.Float64:
+					info.Fields[i].DataStoreType = "double"
+				case reflect.String:
+					info.Fields[i].DataStoreType = "varchar(64)"
+				case reflect.Slice:
+					if field.Type.Elem().Kind() == reflect.Uint8 {
+						info.Fields[i].DataStoreType = "blob"
+					} else {
+						info.Fields[i].DataStoreType = "mediumtext"
+					}
+				default:
+					info.Fields[i].DataStoreType = "int"
+				}
+			}
+			info.ByColumName[info.Fields[i].ColumnName] = info.Fields[i]
+			if info.Fields[i].IsAutoincrement {
+				info.AIField = info.Fields[i]
+			}
 		}
 	}
 	pInfo, _ := dataSchemaCache.LoadOrStore(v, &info)
@@ -263,7 +304,7 @@ func GetSchema(v any) *Schema {
 	rv := reflect.ValueOf(v)
 	elem := followPointer(rv)
 
-	if elem.Kind() != reflect.Struct || elem.IsNil() || !elem.IsValid() {
+	if elem.Kind() != reflect.Struct /* || elem.IsNil() || !elem.IsValid()*/ {
 		return nil
 	}
 
@@ -274,10 +315,155 @@ func GetSchema(v any) *Schema {
 		Indices: make([]Index, 0, len(schema.Fields)),
 	}
 	for i := 0; i < len(schema.Fields); i++ {
-		field := &schema.Fields[i]
+		field := schema.Fields[i]
+		ret.Fields = append(ret.Fields, Field{
+			Name:          field.ColumnName,
+			Type:          field.DataStoreType,
+			Nullable:      field.IsNullable,
+			AutoIncrement: field.IsAutoincrement,
+			DefaultValue:  field.DefaultValue,
+			Comment:       field.Comment,
+		})
 
-		if field.ColumnName == "" {
-			field.ColumnName = field.Name
+		if field.IndexType != NONE {
+			for j := 0; j < len(ret.Indices); j++ {
+				index := &ret.Indices[j]
+				if index.Name == field.indexName {
+					index.Columns = append(index.Columns, field.ColumnName)
+					goto indexDone
+				}
+			}
+			ret.Indices = append(ret.Indices, Index{
+				Name:    field.indexName,
+				Primary: field.IndexType == PRIMARY_KEY,
+				Unique:  field.IndexType == UNIQUE,
+				Columns: []string{field.ColumnName},
+			})
+		indexDone:
 		}
 	}
+	return ret
+}
+
+func Insert(ctx context.Context, db *sql.DB, table string, v any) error {
+	rv := reflect.ValueOf(v)
+	elem := followPointer(rv)
+
+	if elem.Kind() != reflect.Struct /* || elem.IsNil() || !elem.IsValid() */ {
+		return nil
+	}
+
+	schema := loadDataSchemaInfo(reflect.TypeOf(elem.Interface()))
+
+	columns := make([]string, 0, len(schema.Fields))
+	values := make([]string, 0, len(schema.Fields))
+	args := make([]interface{}, 0, len(schema.Fields))
+	for i := 0; i < len(schema.Fields); i++ {
+		field := schema.Fields[i]
+		if field.IsAutoincrement {
+			continue
+		}
+		columns = append(columns, field.ColumnName)
+		values = append(values, "?")
+		args = append(args, elem.Field(field.FieldIndex).Interface())
+	}
+
+	r, e := db.ExecContext(ctx, "INSERT INTO `"+table+"` (`"+strings.Join(columns, "`,`")+"`) VALUES ("+strings.Join(values, ",")+")", args...)
+	if e != nil {
+		return errors.Wrap(e, "Insert failed")
+	}
+
+	if schema.AIField != nil {
+		idx, e := r.LastInsertId()
+		if e != nil {
+			return errors.Wrap(e, "Get last insert id failed")
+		}
+		elem.Field(schema.AIField.FieldIndex).SetInt(idx)
+	}
+
+	return nil
+}
+
+func Update(ctx context.Context, db *sql.DB, table string, columns []string, v any) error {
+	rv := reflect.ValueOf(v)
+	elem := followPointer(rv)
+
+	if elem.Kind() != reflect.Struct /* || elem.IsNil() || !elem.IsValid() */ {
+		return nil
+	}
+
+	schema := loadDataSchemaInfo(reflect.TypeOf(elem.Interface()))
+
+	if len(columns) == 0 {
+		columns = make([]string, 0, len(schema.Fields))
+		for _, field := range schema.Fields {
+			if field.IsPrimaryKey || field.IsAutoincrement {
+				continue
+			}
+			columns = append(columns, field.ColumnName)
+		}
+	}
+
+	pks := make([]*dataSchemaField, 0, 4)
+	for _, field := range schema.Fields {
+		if field.IsPrimaryKey {
+			pks = append(pks, field)
+		}
+	}
+
+	sql := "update `" + table + "` set "
+	args := make([]interface{}, 0, len(schema.Fields))
+	for _, colName := range columns {
+		sql += "`" + colName + "`=?,"
+		field := schema.ByColumName[colName]
+		if field == nil {
+			return errors.Wrapf(ErrUnknownColumn, "Unknown column %s", colName)
+		}
+		args = append(args, elem.Field(field.FieldIndex).Interface())
+	}
+
+	sql = sql[:len(sql)-1] + " where "
+	for _, pk := range pks {
+		sql += "`" + pk.ColumnName + "`=? and "
+		args = append(args, elem.Field(pk.FieldIndex).Interface())
+	}
+	sql = sql[:len(sql)-5]
+
+	_, e := db.ExecContext(ctx, sql, args...)
+	if e != nil {
+		return errors.Wrap(e, "Update failed")
+	}
+
+	return nil
+}
+
+func ScanRrow(row *sql.Rows, v any) error {
+	rv := reflect.ValueOf(v)
+	elem := followPointer(rv)
+
+	if elem.Kind() != reflect.Struct /* || elem.IsNil() || !elem.IsValid() */ {
+		return nil
+	}
+
+	schema := loadDataSchemaInfo(reflect.TypeOf(elem.Interface()))
+
+	columns, error := row.Columns()
+	if error != nil {
+		return errors.Wrap(error, "Get table columns failed")
+	}
+
+	scanArgs := make([]interface{}, 0, len(columns))
+	for _, colName := range columns {
+		col := schema.ByColumName[colName]
+		if col == nil {
+			return errors.Wrapf(ErrUnknownColumn, "Unknown column %s", colName)
+		}
+		scanArgs = append(scanArgs, elem.Field(col.FieldIndex).Addr().Interface())
+	}
+
+	if e := row.Scan(scanArgs...); e != nil {
+		return errors.Wrap(e, "Scan table columns failed")
+	}
+
+	return nil
 }

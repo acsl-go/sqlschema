@@ -18,6 +18,66 @@ func connectDB() *sql.DB {
 	return db
 }
 
+func TestSchemaReflect(t *testing.T) {
+	data := &struct {
+		ID      int    `db:"id pk ai int(11)"`
+		Name    string `db:"name unique varchar(255)"`
+		Age     int    `db:"age def(0) int(11)"`
+		Idx1    int    `db:"idx1 unique(idx)"`
+		Idx2    int    `db:"idx2 unique(idx)"`
+		Comment string `db:"comment null"`
+	}{}
+	sc := GetSchema(data)
+	sc.Name = "test2"
+	sc.Engine = "InnoDB"
+	sc.Collate = "utf8mb4_general_ci"
+	t.Log(sc)
+	db := connectDB()
+	defer db.Close()
+	if e := sc.Update(db, context.Background()); e != nil {
+		t.Error(e)
+	}
+
+	data.Name = "foo"
+	data.Age = 10
+	data.Idx1 = 1
+	data.Idx2 = 2
+	data.Comment = ""
+	if e := Insert(context.Background(), db, "test2", data); e != nil {
+		t.Error(e)
+	}
+
+	data.Age = 20
+	if e := Update(context.Background(), db, "test2", nil, data); e != nil {
+		t.Error(e)
+	}
+}
+
+func TestSchemaReflectScan(t *testing.T) {
+	data := &struct {
+		ID      int    `db:"id pk ai int(11)"`
+		Name    string `db:"name unique varchar(255)"`
+		Age     int    `db:"age def(0) int(11)"`
+		Idx1    int    `db:"idx1 unique(idx)"`
+		Idx2    int    `db:"idx2 unique(idx)"`
+		Comment string `db:"comment null"`
+	}{}
+	db := connectDB()
+	defer db.Close()
+
+	r, e := db.Query("select * from test2")
+	if e != nil {
+		t.Error(e)
+	}
+
+	for r.Next() {
+		if e := ScanRrow(r, data); e != nil {
+			t.Error(e)
+		}
+		t.Log(data)
+	}
+}
+
 func TestSchemeUpdate(t *testing.T) {
 	sc := &Schema{
 		Name: "test",
