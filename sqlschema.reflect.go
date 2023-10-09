@@ -61,11 +61,13 @@ The column type could be omitted, if omitted, the type will be determined by the
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"sync"
 
 	"github.com/pkg/errors"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -365,7 +367,20 @@ func Insert(ctx context.Context, db *sql.DB, table string, v any) error {
 		}
 		columns = append(columns, field.ColumnName)
 		values = append(values, "?")
-		args = append(args, elem.Field(field.FieldIndex).Interface())
+		switch field.SerializeMethod {
+		case NONE:
+			args = append(args, elem.Field(field.FieldIndex).Interface())
+		case ARRAY:
+			args = append(args, strings.Join(elem.Field(field.FieldIndex).Interface().([]string), field.SerializeDelimiter))
+		case JSON:
+			b, _ := json.Marshal(elem.Field(field.FieldIndex).Interface())
+			args = append(args, string(b))
+		case YAML:
+			b, _ := yaml.Marshal(elem.Field(field.FieldIndex).Interface())
+			args = append(args, string(b))
+		default:
+			args = append(args, "")
+		}
 	}
 
 	r, e := db.ExecContext(ctx, "INSERT INTO `"+table+"` (`"+strings.Join(columns, "`,`")+"`) VALUES ("+strings.Join(values, ",")+")", args...)
@@ -419,7 +434,21 @@ func Update(ctx context.Context, db *sql.DB, table string, columns []string, v a
 		if field == nil {
 			return errors.Wrapf(ErrUnknownColumn, "Unknown column %s", colName)
 		}
-		args = append(args, elem.Field(field.FieldIndex).Interface())
+
+		switch field.SerializeMethod {
+		case NONE:
+			args = append(args, elem.Field(field.FieldIndex).Interface())
+		case ARRAY:
+			args = append(args, strings.Join(elem.Field(field.FieldIndex).Interface().([]string), field.SerializeDelimiter))
+		case JSON:
+			b, _ := json.Marshal(elem.Field(field.FieldIndex).Interface())
+			args = append(args, string(b))
+		case YAML:
+			b, _ := yaml.Marshal(elem.Field(field.FieldIndex).Interface())
+			args = append(args, string(b))
+		default:
+			args = append(args, "")
+		}
 	}
 
 	sql = sql[:len(sql)-1] + " where "
@@ -452,17 +481,44 @@ func ScanRrow(row *sql.Rows, v any) error {
 		return errors.Wrap(error, "Get table columns failed")
 	}
 
+	type serializeFieldInfo struct {
+		field *dataSchemaField
+		data  string
+	}
+
+	serializedFields := make([]*serializeFieldInfo, 0)
 	scanArgs := make([]interface{}, 0, len(columns))
 	for _, colName := range columns {
 		col := schema.ByColumName[colName]
 		if col == nil {
 			return errors.Wrapf(ErrUnknownColumn, "Unknown column %s", colName)
 		}
-		scanArgs = append(scanArgs, elem.Field(col.FieldIndex).Addr().Interface())
+		if col.SerializeMethod == NONE {
+			scanArgs = append(scanArgs, elem.Field(col.FieldIndex).Addr().Interface())
+		} else {
+			sfi := &serializeFieldInfo{
+				field: col,
+				data:  "",
+			}
+			serializedFields = append(serializedFields, sfi)
+			scanArgs = append(scanArgs, &sfi.data)
+		}
 	}
 
 	if e := row.Scan(scanArgs...); e != nil {
 		return errors.Wrap(e, "Scan table columns failed")
+	}
+
+	for _, sfi := range serializedFields {
+		switch sfi.field.SerializeMethod {
+		case ARRAY:
+			a := strings.Split(sfi.data, sfi.field.SerializeDelimiter)
+			elem.Field(sfi.field.FieldIndex).Set(reflect.ValueOf(a))
+		case JSON:
+			json.Unmarshal([]byte(sfi.data), elem.Field(sfi.field.FieldIndex).Addr().Interface())
+		case YAML:
+			yaml.Unmarshal([]byte(sfi.data), elem.Field(sfi.field.FieldIndex).Addr().Interface())
+		}
 	}
 
 	return nil

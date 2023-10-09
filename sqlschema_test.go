@@ -20,12 +20,15 @@ func connectDB() *sql.DB {
 
 func TestSchemaReflect(t *testing.T) {
 	data := &struct {
-		ID      int    `db:"id pk ai int(11)"`
-		Name    string `db:"name unique varchar(255)"`
-		Age     int    `db:"age def(0) int(11)"`
-		Idx1    int    `db:"idx1 unique(idx)"`
-		Idx2    int    `db:"idx2 unique(idx)"`
-		Comment string `db:"comment null"`
+		ID      int                    `db:"id pk ai int(11)"`
+		Name    string                 `db:"name unique varchar(255)"`
+		Age     int                    `db:"age def(0) int(11)"`
+		Idx1    int                    `db:"idx1 unique(idx)"`
+		Idx2    int                    `db:"idx2 unique(idx)"`
+		Comment string                 `db:"comment null"`
+		Arr     []string               `db:"arr text arr(,)"`
+		Json    map[string]interface{} `db:"json text json"`
+		Yaml    map[string]interface{} `db:"yaml text yaml"`
 	}{}
 	sc := GetSchema(data)
 	sc.Name = "test2"
@@ -43,6 +46,15 @@ func TestSchemaReflect(t *testing.T) {
 	data.Idx1 = 1
 	data.Idx2 = 2
 	data.Comment = ""
+	data.Arr = []string{"a", "b", "c"}
+	data.Json = map[string]interface{}{
+		"foo": "bar",
+		"bar": 123,
+	}
+	data.Yaml = map[string]interface{}{
+		"foo": "bar",
+		"bar": 123,
+	}
 	if e := Insert(context.Background(), db, "test2", data); e != nil {
 		t.Error(e)
 	}
@@ -55,12 +67,15 @@ func TestSchemaReflect(t *testing.T) {
 
 func TestSchemaReflectScan(t *testing.T) {
 	data := &struct {
-		ID      int    `db:"id pk ai int(11)"`
-		Name    string `db:"name unique varchar(255)"`
-		Age     int    `db:"age def(0) int(11)"`
-		Idx1    int    `db:"idx1 unique(idx)"`
-		Idx2    int    `db:"idx2 unique(idx)"`
-		Comment string `db:"comment null"`
+		ID      int                    `db:"id pk ai int(11)"`
+		Name    string                 `db:"name unique varchar(255)"`
+		Age     int                    `db:"age def(0) int(11)"`
+		Idx1    int                    `db:"idx1 unique(idx)"`
+		Idx2    int                    `db:"idx2 unique(idx)"`
+		Comment string                 `db:"comment null"`
+		Arr     []string               `db:"arr text arr(,)"`
+		Json    map[string]interface{} `db:"json text json"`
+		Yaml    map[string]interface{} `db:"yaml text yaml"`
 	}{}
 	db := connectDB()
 	defer db.Close()
