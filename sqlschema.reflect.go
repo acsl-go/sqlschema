@@ -318,6 +318,9 @@ func GetSchema(v any) *Schema {
 	}
 	for i := 0; i < len(schema.Fields); i++ {
 		field := schema.Fields[i]
+		if field == nil {
+			continue
+		}
 		ret.Fields = append(ret.Fields, Field{
 			Name:          field.ColumnName,
 			Type:          field.DataStoreType,
